@@ -12,8 +12,8 @@ const SKU_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSV9JuunrwM
 const BRANDS = ["AJI-Retail", "AJI-Bulk", "Hapima", "TasteMate"];
 
 const SKU_LIST = {
-  "AJI-Retail": ["AJI-NO-MOTO 450g", "AJI-NO-MOTO 200g", "AJI-NO-MOTO 109g", "AJI-NO-MOTO 20Tk", "AJI-NO-MOTO 10Tk"],
-  "AJI-Bulk": ["AJI-NO-MOTO Bulk 1kg", "AJI-NO-MOTO Bulk 5kg"],
+  "AJI-Retail": ["AJI-NO-MOTO 450g", "AJI-NO-MOTO 200g", "AJI-NO-MOTO 100g", "AJI-NO-MOTO 20Tk", "AJI-NO-MOTO 10Tk"],
+  "AJI-Bulk": ["AJI-NO-MOTO Bulk 25kg", "AJI-NO-MOTO Bulk 5kg"],
   "Hapima": ["Hapima 15g"],
   "TasteMate": ["TasteMate 450g"],
 };
@@ -31,8 +31,8 @@ function buildAreas(prefix, count, seedBase) {
   return Array.from({ length: count }, (_, i) => {
     const perBrand = {};
     BRANDS.forEach((b) => {
-      const target = Math.round(3000 + rnd() * 5000); // KG
-      const achv = Math.round(target * (0.75 + rnd() * 0.5));
+      const Rolling Forecast = Math.round(3000 + rnd() * 5000); // KG
+      const Result = Math.round(target * (0.75 + rnd() * 0.5));
       const lastMonth = Math.round(achv * (0.85 + rnd() * 0.3));
       perBrand[b] = { target, achv, lastMonth };
     });
