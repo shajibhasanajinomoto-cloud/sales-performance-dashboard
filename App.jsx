@@ -264,8 +264,8 @@ function buildLiveSkuRows(rawRows) {
         workingDay: parseInt(getField(r, ["workingday"], 0), 10) || 0,
         brand: String(getField(r, ["brand"])).trim(),
         sku: String(getField(r, ["sku"])).trim(),
-        district: String(getField(r, ["district"], "Unassigned")).trim() || "Unassigned",
-        team: String(getField(r, ["team"], "Unassigned")).trim() || "Unassigned",
+        team: String(getField(r, ["team"])).trim(),
+        district: String(getField(r, ["district"])).trim(),
         amount: parseFloat(getField(r, ["qtykg", "qty", "achievementkg", "achievement", "amount"], 0)) || 0,
         invoice: parseFloat(getField(r, ["invoice"], 0)) || 0,
         pkt: parseFloat(getField(r, ["pktpc", "pkt"], 0)) || 0,
@@ -333,6 +333,14 @@ function computeWorkingDayTrend(skuRows, brand, sku, refMonth, maxDay = 26) {
   const lastMonth = bucket((d) => d.getFullYear() === lmY && d.getMonth() === lmM);
   const lastYear = bucket((d) => d.getFullYear() === lyY && d.getMonth() === lyM);
 
+  // Running month should show 0 beyond the last day we actually have data for — not a flat
+  // carried-forward line, which would misleadingly look like the month already finished.
+  const runningMonthRows = filtered.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
+  const currentDay = runningMonthRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
+  for (let i = 0; i < maxDay; i++) {
+    if (i + 1 > currentDay) running[i] = 0;
+  }
+
   return Array.from({ length: maxDay }, (_, i) => ({
     day: `D${i + 1}`,
     "Running Month": running[i],
@@ -388,17 +396,15 @@ function computeMultiMetricSnapshot(skuRows, brand, sku, refMonth) {
   return out;
 }
 
-// Same as computeWorkingDayTrend but returns cumulative day-wise series for all 4 metrics at once
-// (Invoice, PKT, KG, Amount) instead of a single blended "amount" field.
-function computeWorkingDayTrendMulti(skuRows, brand, sku, refMonth, maxDay = 26) {
-  const filtered = skuRows.filter((r) => normText(r.brand) === normText(brand) && normText(r.sku) === normText(sku));
-  if (!filtered.length) return null;
+// District > Team growth/degrowth: cumulative KG up to the current working day, running month vs last month.
+function computeDistrictTeamGrowth(skuRows, refMonth) {
+  if (!skuRows || !skuRows.length) return null;
   let curY, curM;
   if (refMonth) {
     [curY, curM] = refMonth.split("-").map(Number);
     curM -= 1;
   } else {
-    const latestDate = filtered.reduce((a, r) => (r.date > a ? r.date : a), filtered[0].date);
+    const latestDate = skuRows.reduce((a, r) => (r.date > a ? r.date : a), skuRows[0].date);
     curY = latestDate.getFullYear();
     curM = latestDate.getMonth();
   }
@@ -408,130 +414,59 @@ function computeWorkingDayTrendMulti(skuRows, brand, sku, refMonth, maxDay = 26)
     lmM = 11;
     lmY -= 1;
   }
-  const lyY = curY - 1;
-  const lyM = curM;
+  const runningRows = skuRows.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
+  if (!runningRows.length) return null;
+  const currentDay = runningRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
 
-  const bucket = (matchFn, metric) => {
-    const daySum = {};
-    filtered.forEach((r) => {
-      if (matchFn(r.date)) daySum[r.workingDay] = (daySum[r.workingDay] || 0) + (r[metric] || 0);
+  const sumFor = (rows, district, team) =>
+    rows
+      .filter((r) => r.district === district && r.team === team && r.workingDay <= currentDay)
+      .reduce((acc, r) => acc + (r.qty || 0), 0);
+
+  const lastMonthRows = skuRows.filter((r) => r.date.getFullYear() === lmY && r.date.getMonth() === lmM);
+
+  const districtMap = {};
+  runningRows.forEach((r) => {
+    if (!r.district || !r.team) return;
+    districtMap[r.district] = districtMap[r.district] || new Set();
+    districtMap[r.district].add(r.team);
+  });
+
+  const districts = Object.keys(districtMap).map((district) => {
+    const teams = Array.from(districtMap[district]).map((team) => {
+      const running = Math.round(sumFor(runningRows, district, team) * 100) / 100;
+      const lastMonth = Math.round(sumFor(lastMonthRows, district, team) * 100) / 100;
+      const growth = lastMonth ? ((running - lastMonth) / lastMonth) * 100 : 0;
+      return { team, running, lastMonth, growth };
     });
-    let cum = 0;
-    const out = [];
-    for (let d = 1; d <= maxDay; d++) {
-      cum += daySum[d] || 0;
-      out.push(Math.round(cum * 100) / 100);
-    }
-    return out;
-  };
-
-  const result = {};
-  ["invoice", "pkt", "qty", "amountTk"].forEach((metric) => {
-    const running = bucket((d) => d.getFullYear() === curY && d.getMonth() === curM, metric);
-    const lastMonth = bucket((d) => d.getFullYear() === lmY && d.getMonth() === lmM, metric);
-    const lastYear = bucket((d) => d.getFullYear() === lyY && d.getMonth() === lyM, metric);
-    result[metric] = Array.from({ length: maxDay }, (_, i) => ({
-      day: `D${i + 1}`,
-      "Running Month": running[i],
-      "Last Month": lastMonth[i],
-      "Last Year": lastYear[i],
-    }));
+    const dRunning = teams.reduce((a, t) => a + t.running, 0);
+    const dLastMonth = teams.reduce((a, t) => a + t.lastMonth, 0);
+    const dGrowth = dLastMonth ? ((dRunning - dLastMonth) / dLastMonth) * 100 : 0;
+    return { district, running: dRunning, lastMonth: dLastMonth, growth: dGrowth, teams };
   });
-  return result;
-}
-function zeroTrendMulti(maxDay = 26) {
-  const out = {};
-  ["invoice", "pkt", "qty", "amountTk"].forEach((m) => (out[m] = zeroTrend(maxDay)));
-  return out;
-}
-// Demo-mode fallback: derive plausible Invoice/PKT/Amount series from the mock KG series.
-function workingDayTrendMulti(seed, workingDays = 24) {
-  const qty = workingDayTrend(seed, workingDays);
-  const scale = (mult) =>
-    qty.map((r) => ({
-      day: r.day,
-      "Running Month": Math.round(r["Running Month"] * mult * 100) / 100,
-      "Last Month": Math.round(r["Last Month"] * mult * 100) / 100,
-      "Last Year": Math.round(r["Last Year"] * mult * 100) / 100,
-    }));
-  return {
-    invoice: scale(1 / 38),
-    pkt: scale(1 / 0.45),
-    qty,
-    amountTk: scale(115),
-  };
+  return { day: currentDay, districts };
 }
 
-// Ranks a group field (District or Team) by current-month KG achievement, across ALL brands/SKUs,
-// with MoM/YoY growth so it's easy to spot who's on top and who's lagging.
-function computeGroupPerformance(skuRows, groupField, refMonth, brand = null, sku = null) {
-  if (!skuRows || !skuRows.length) return [];
-  const rows = brand && sku ? skuRows.filter((r) => normText(r.brand) === normText(brand) && normText(r.sku) === normText(sku)) : skuRows;
-  if (!rows.length) return [];
-  let curY, curM;
-  if (refMonth) {
-    [curY, curM] = refMonth.split("-").map(Number);
-    curM -= 1;
-  } else {
-    const latestDate = rows.reduce((a, r) => (r.date > a ? r.date : a), rows[0].date);
-    curY = latestDate.getFullYear();
-    curM = latestDate.getMonth();
-  }
-  let lmY = curY;
-  let lmM = curM - 1;
-  if (lmM < 0) {
-    lmM = 11;
-    lmY -= 1;
-  }
-
-  // Only count up to the same working day reached so far this month — otherwise a partial running
-  // month gets compared against a full last month and looks like fake degrowth (mismatches the
-  // "same working day" summary cards above).
-  const runningRows = rows.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
-  if (!runningRows.length) return [];
-  const targetDay = runningRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
-
-  const groups = {};
-  rows.forEach((r) => {
-    if (r.workingDay > targetDay) return;
-    const key = r[groupField] || "Unassigned";
-    if (!groups[key]) groups[key] = { name: key, invoice: 0, pkt: 0, kg: 0, amountTk: 0, lmInvoice: 0, lmPkt: 0, lmKg: 0, lmAmountTk: 0 };
-    const g = groups[key];
-    if (r.date.getFullYear() === curY && r.date.getMonth() === curM) {
-      g.invoice += r.invoice;
-      g.pkt += r.pkt;
-      g.kg += r.qty;
-      g.amountTk += r.amountTk;
-    } else if (r.date.getFullYear() === lmY && r.date.getMonth() === lmM) {
-      g.lmInvoice += r.invoice;
-      g.lmPkt += r.pkt;
-      g.lmKg += r.qty;
-      g.lmAmountTk += r.amountTk;
-    }
+// Last Day Sales: the single most recent day's Qty (KG), per SKU + grand total (not cumulative).
+function computeLastDaySales(skuRows, brand) {
+  if (!skuRows || !skuRows.length) return null;
+  const latestDate = skuRows.reduce((a, r) => (r.date > a ? r.date : a), skuRows[0].date);
+  const rows = skuRows.filter((r) => normText(r.brand) === normText(brand) && r.date.getTime() === latestDate.getTime());
+  const skuList = SKU_LIST[brand] || [];
+  const items = skuList.map((s) => {
+    const value = rows.filter((r) => normText(r.sku) === normText(s)).reduce((acc, r) => acc + (r.qty || 0), 0);
+    return { sku: s, value: Math.round(value * 100) / 100 };
   });
-
-  const vs = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : 0);
-  return Object.values(groups)
-    .map((g) => ({
-      name: g.name,
-      invoice: Math.round(g.invoice),
-      pkt: Math.round(g.pkt),
-      kg: Math.round(g.kg),
-      amountTk: Math.round(g.amountTk),
-      vsInvoice: vs(g.invoice, g.lmInvoice),
-      vsPkt: vs(g.pkt, g.lmPkt),
-      vsKg: vs(g.kg, g.lmKg),
-      vsAmountTk: vs(g.amountTk, g.lmAmountTk),
-    }))
-    .filter((g) => g.invoice > 0 || g.pkt > 0 || g.kg > 0 || g.amountTk > 0)
-    .sort((a, b) => a.vsKg - b.vsKg);
+  const total = Math.round(items.reduce((acc, i) => acc + i.value, 0) * 100) / 100;
+  return { date: latestDate, items, total };
 }
 
 function computeSkuComparisonLive(skuRows, brand, refMonth) {
   const results = (SKU_LIST[brand] || []).map((s) => {
     const t = computeWorkingDayTrend(skuRows, brand, s, refMonth);
     if (t) {
-      const last = t[t.length - 1];
+      const idx = t.reduce((acc, d, i) => (d["Running Month"] > 0 ? i : acc), -1);
+      const last = idx >= 0 ? t[idx] : t[t.length - 1];
       const vsMonth = last["Last Month"] ? ((last["Running Month"] - last["Last Month"]) / last["Last Month"]) * 100 : 0;
       const vsYear = last["Last Year"] ? ((last["Running Month"] - last["Last Year"]) / last["Last Year"]) * 100 : 0;
       return { sku: s, "Running Month": last["Running Month"], "Last Month": last["Last Month"], "Last Year": last["Last Year"], vsMonth, vsYear };
@@ -694,40 +629,6 @@ function GrowthBadge({ pct }) {
   );
 }
 
-function DegrowthList({ title, data }) {
-  return (
-    <div className="bg-white rounded-2xl p-5" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-      <h2 className="text-sm font-bold mb-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{title}</h2>
-      <p className="text-xs text-slate-400 mb-3">vs Last Month, this SKU only — shown where at least one metric is down.</p>
-      {data.length === 0 ? (
-        <p className="text-xs text-slate-400">No degrowth — everyone is at or above last month on all metrics.</p>
-      ) : (
-        <div className="divide-y divide-slate-100">
-          {data.map((g) => (
-            <div key={g.name} className="py-2.5">
-              <div className="font-medium text-slate-700 text-sm mb-1.5">{g.name}</div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                <div className="flex items-center justify-between gap-1 text-xs">
-                  <span className="text-slate-400">Invoice</span> <GrowthBadge pct={g.vsInvoice} />
-                </div>
-                <div className="flex items-center justify-between gap-1 text-xs">
-                  <span className="text-slate-400">PKT</span> <GrowthBadge pct={g.vsPkt} />
-                </div>
-                <div className="flex items-center justify-between gap-1 text-xs">
-                  <span className="text-slate-400">KG</span> <GrowthBadge pct={g.vsKg} />
-                </div>
-                <div className="flex items-center justify-between gap-1 text-xs">
-                  <span className="text-slate-400">Amount</span> <GrowthBadge pct={g.vsAmountTk} />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ProgressBar({ pct }) {
   const clamped = Math.min(pct, 130);
   return (
@@ -876,12 +777,6 @@ function RadialProgress({ label, pct, target, achv, color }) {
 }
 
 const BRAND_COLORS = { "AJI-Retail": NAVY, "AJI-Bulk": GOLD, "Hapima": RED, "TasteMate": GREEN, "Total": "#475569", "AJI-NO-MOTO": NAVY, "HAPIMA": RED };
-const TREND_METRIC_CONFIG = [
-  { key: "invoice", label: "Invoice", color: NAVY, decimals: 0, tickDivide: false },
-  { key: "pkt", label: "PKT (pc)", color: GOLD, decimals: 0, tickDivide: false },
-  { key: "qty", label: "KG", color: GREEN, decimals: 1, tickDivide: true },
-  { key: "amountTk", label: "Amount (Tk)", color: "#7C3AED", decimals: 0, tickDivide: true },
-];
 
 function ProductProgressRow({ allAreas }) {
   return (
@@ -920,6 +815,37 @@ function MetricSnapshotCard({ label, icon: Icon, color, data, unit, decimals = 0
         <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">MoM <GrowthBadge pct={data.vsMonth} /></div>
         <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">YoY <GrowthBadge pct={data.vsYear} /></div>
       </div>
+    </div>
+  );
+}
+
+function DistrictTeamRow({ district }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="py-2.5">
+      <div className="flex items-center justify-between cursor-pointer" onClick={() => setOpen(!open)}>
+        <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {district.district}
+        </span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-400">{fmt(district.running)}</span>
+          <GrowthBadge pct={district.growth} />
+        </div>
+      </div>
+      {open && (
+        <div className="mt-1.5 pl-6 space-y-1.5">
+          {district.teams.map((t) => (
+            <div key={t.team} className="flex items-center justify-between text-xs">
+              <span className="text-slate-500">{t.team}</span>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-400">{fmt(t.running)}</span>
+                <GrowthBadge pct={t.growth} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -996,15 +922,15 @@ export default function Dashboard() {
   const allAreas = useMemo(() => activeSections.flatMap((s) => s.units.flatMap((u) => u.areas)), [activeSections]);
   const totals = useMemo(() => sumBrand(allAreas, brand), [allAreas, brand]);
   const availableMonths = useMemo(() => (liveSkuRows ? getAvailableMonths(liveSkuRows) : []), [liveSkuRows]);
-  const trendMulti = useMemo(() => {
+  const trend = useMemo(() => {
     if (liveSkuRows) {
-      const t = computeWorkingDayTrendMulti(liveSkuRows, skuBrand, sku, selectedMonth);
-      return t || zeroTrendMulti();
+      const t = computeWorkingDayTrend(liveSkuRows, skuBrand, sku, selectedMonth);
+      return t || zeroTrend();
     }
-    return workingDayTrendMulti(sku.length * 7 + skuBrand.length);
+    return workingDayTrend(sku.length * 7 + skuBrand.length);
   }, [sku, skuBrand, liveSkuRows, selectedMonth]);
-  const trend = trendMulti.qty;
-  const last = trend[trend.length - 1];
+  const lastDataIdx = trend.reduce((acc, t, i) => (t["Running Month"] > 0 ? i : acc), -1);
+  const last = lastDataIdx >= 0 ? trend[lastDataIdx] : trend[trend.length - 1];
   const vsLastMonth = last["Last Month"] ? ((last["Running Month"] - last["Last Month"]) / last["Last Month"]) * 100 : 0;
   const vsLastYear = last["Last Year"] ? ((last["Running Month"] - last["Last Year"]) / last["Last Year"]) * 100 : 0;
   const skuComparison = useMemo(() => {
@@ -1014,12 +940,18 @@ export default function Dashboard() {
     }
     return buildSkuComparison(skuBrand);
   }, [skuBrand, liveSkuRows, selectedMonth]);
-  const districtPerf = useMemo(() => (liveSkuRows ? computeGroupPerformance(liveSkuRows, "district", selectedMonth, skuBrand, sku).filter((g) => g.vsInvoice < 0 || g.vsPkt < 0 || g.vsKg < 0 || g.vsAmountTk < 0) : []), [liveSkuRows, selectedMonth, skuBrand, sku]);
-  const teamPerf = useMemo(() => (liveSkuRows ? computeGroupPerformance(liveSkuRows, "team", selectedMonth, skuBrand, sku).filter((g) => g.vsInvoice < 0 || g.vsPkt < 0 || g.vsKg < 0 || g.vsAmountTk < 0) : []), [liveSkuRows, selectedMonth, skuBrand, sku]);
   const multiMetric = useMemo(() => {
     if (!liveSkuRows) return null;
     return computeMultiMetricSnapshot(liveSkuRows, skuBrand, sku, selectedMonth);
   }, [liveSkuRows, skuBrand, sku, selectedMonth]);
+  const districtGrowth = useMemo(() => {
+    if (!liveSkuRows) return null;
+    return computeDistrictTeamGrowth(liveSkuRows, selectedMonth);
+  }, [liveSkuRows, selectedMonth]);
+  const lastDaySales = useMemo(() => {
+    if (!liveSkuRows) return null;
+    return computeLastDaySales(liveSkuRows, skuBrand);
+  }, [liveSkuRows, skuBrand]);
   const lastUpdatedLabel = useMemo(() => {
     if (!liveSkuRows || !liveSkuRows.length) return null;
     const maxDate = liveSkuRows.reduce((a, r) => (r.date > a ? r.date : a), liveSkuRows[0].date);
@@ -1243,6 +1175,42 @@ export default function Dashboard() {
         </div>
 
 
+        {/* Last Day Sales — per SKU + total (not cumulative) */}
+        {lastDaySales && (
+          <div className="bg-white rounded-2xl p-5 mb-6" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
+            <h2 className="text-sm font-bold mb-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>Last Day Sales — {skuBrand}</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              {lastDaySales.date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })} · Qty (KG), single day (not cumulative)
+            </p>
+            <div className="flex gap-3 flex-wrap">
+              {lastDaySales.items.map((it) => (
+                <div key={it.sku} className="flex-1 min-w-[110px] bg-slate-50 rounded-xl px-3 py-2.5 text-center">
+                  <div className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">{it.sku}</div>
+                  <div className="text-base font-bold mt-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{fmtNum(it.value)}</div>
+                </div>
+              ))}
+              <div className="flex-1 min-w-[110px] rounded-xl px-3 py-2.5 text-center" style={{ background: `${NAVY}0F` }}>
+                <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: NAVY }}>Total</div>
+                <div className="text-base font-extrabold mt-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{fmtNum(lastDaySales.total)}</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* District > Team growth/degrowth */}
+        {districtGrowth && (
+          <div className="bg-white rounded-2xl p-5 mb-6" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
+            <h2 className="text-sm font-bold mb-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>District-wise Team Growth</h2>
+            <p className="text-xs text-slate-400 mb-4">
+              Qty (KG) up to Day {districtGrowth.day} — running month vs last month, same working day.
+            </p>
+            <div className="divide-y divide-slate-100">
+              {districtGrowth.districts.map((d) => (
+                <DistrictTeamRow key={d.district} district={d} />
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* SKU trend */}
         <div className="bg-white rounded-2xl p-5" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
@@ -1266,7 +1234,7 @@ export default function Dashboard() {
           </div>
 
           {multiMetric ? (
-            <div className="mb-1">
+            <div className="mb-5">
               <p className="text-xs text-slate-400 mb-3">
                 Same working day comparison — Day {multiMetric.day} (Running Month vs Last Month vs Last Year, up to this day)
               </p>
@@ -1278,7 +1246,7 @@ export default function Dashboard() {
               </div>
             </div>
           ) : (
-            <div className="flex gap-3 mb-1 flex-wrap">
+            <div className="flex gap-3 mb-4 flex-wrap">
               <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-1.5 font-medium">
                 vs Last Month <GrowthBadge pct={vsLastMonth} />
               </div>
@@ -1287,66 +1255,30 @@ export default function Dashboard() {
               </div>
             </div>
           )}
-        </div>
 
-        {TREND_METRIC_CONFIG.map(({ key, label, color, decimals, tickDivide }) => {
-          const data = trendMulti[key];
-          // Compare at the same working day reached so far this month (matches the snapshot cards above),
-          // not the last row of the array — otherwise a partial running month gets compared to a full last month.
-          const dayIdx = multiMetric ? Math.min(multiMetric.day, data.length) - 1 : data.length - 1;
-          const lastRow = data[dayIdx];
-          const vsM = lastRow["Last Month"] ? ((lastRow["Running Month"] - lastRow["Last Month"]) / lastRow["Last Month"]) * 100 : 0;
-          const vsY = lastRow["Last Year"] ? ((lastRow["Running Month"] - lastRow["Last Year"]) / lastRow["Last Year"]) * 100 : 0;
-          const gradId = `gradTrend-${key}`;
-          return (
-            <div key={key} className="bg-white rounded-2xl p-5 mt-4" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <h2 className="text-sm font-bold" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{label} — {sku} (working-day cumulative)</h2>
-                <div className="flex gap-3 flex-wrap">
-                  <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-1.5 font-medium">
-                    vs Last Month <GrowthBadge pct={vsM} />
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-1.5 font-medium">
-                    vs Last Year <GrowthBadge pct={vsY} />
-                  </div>
-                </div>
-              </div>
-
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={color} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={color} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-                  <YAxis
-                    tick={{ fontSize: 11, fill: "#94A3B8" }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => (tickDivide ? `${Math.round(v / 1000)}k` : Math.round(v).toLocaleString())}
-                  />
-                  <Tooltip formatter={(v) => (decimals ? v.toFixed(decimals) : fmt(v))} contentStyle={{ borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12, boxShadow: "0 8px 24px rgba(10,38,71,0.12)" }} />
-                  <Area type="monotone" dataKey="Running Month" stroke={color} strokeWidth={2.5} fill={`url(#${gradId})`} dot={false} />
-                  <Area type="monotone" dataKey="Last Month" stroke={RED} strokeWidth={1.75} strokeDasharray="5 4" fill="transparent" dot={false} />
-                  <Area type="monotone" dataKey="Last Year" stroke="#94A3B8" strokeWidth={1.75} strokeDasharray="2 3" fill="transparent" dot={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-              <div className="flex gap-4 mt-2 text-xs text-slate-500">
-                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: color }} /> Running Month</span>
-                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: RED }} /> Last Month</span>
-                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: "#94A3B8" }} /> Last Year</span>
-              </div>
-            </div>
-          );
-        })}
-
-        {/* District & Team degrowth for this exact SKU — bottom of page */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-          <DegrowthList title={`District in Degrowth — ${sku}`} data={districtPerf} />
-          <DegrowthList title={`Team in Degrowth — ${sku}`} data={teamPerf} />
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={trend} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gradRunning" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor={NAVY} stopOpacity={0.35} />
+                  <stop offset="100%" stopColor={NAVY} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
+              <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+              <Tooltip formatter={(v) => fmt(v)} contentStyle={{ borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12, boxShadow: "0 8px 24px rgba(10,38,71,0.12)" }} />
+              <Area type="monotone" dataKey="Running Month" stroke={NAVY} strokeWidth={2.5} fill="url(#gradRunning)" dot={false} />
+              <Area type="monotone" dataKey="Last Month" stroke={RED} strokeWidth={1.75} strokeDasharray="5 4" fill="transparent" dot={false} />
+              <Area type="monotone" dataKey="Last Year" stroke="#94A3B8" strokeWidth={1.75} strokeDasharray="2 3" fill="transparent" dot={false} />
+            </AreaChart>
+          </ResponsiveContainer>
+          <div className="flex gap-4 mt-2 text-xs text-slate-500">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: NAVY }} /> Running Month</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: RED }} /> Last Month</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: "#94A3B8" }} /> Last Year</span>
+          </div>
+          <p className="text-xs text-slate-400 mt-3">Cumulative achievement by working day (D1, D2...) so growth/degrowth is visible at a glance, day-aligned across periods.</p>
         </div>
       </>
       )}
