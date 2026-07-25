@@ -38,7 +38,7 @@ function buildAreas(prefix, count, seedBase) {
       const lastMonth = Math.round(achv * (0.85 + rnd() * 0.3));
       perBrand[b] = { target, achv, lastMonth };
     });
-    return { name: `${prefix}-${i + 1}`, brands: perBrand };
+    return { name: `${prefix}-${i + 1}`, brands: perBrand, ldSales: null };
   });
 }
 
@@ -153,7 +153,8 @@ function buildLiveSectionsWide(rawRows) {
   };
   const totalWDColIndex = findCol(["totalworkingdays", "totalworkingday", "workingdaystotal"]);
   const passedWDColIndex = findCol(["workingdayspassed", "workingdaypassed", "workingdayspass", "dayspassed", "workingdaydone"]);
-  const extraCols = [monthColIndex, totalWDColIndex, passedWDColIndex].filter((i) => i !== -1);
+  const ldSalesColIndex = findCol(["ldsales", "ldsaleskg", "lastdaysales", "ldsalekg", "ldsale"]);
+  const extraCols = [monthColIndex, totalWDColIndex, passedWDColIndex, ldSalesColIndex].filter((i) => i !== -1);
 
   const baseCols = 3; // Section, Unit, Area always occupy the first 3 columns
 
@@ -190,6 +191,7 @@ function buildLiveSectionsWide(rawRows) {
     const areaRaw = (row[2] || "").toString().trim();
     const totalWDRaw = totalWDColIndex !== -1 ? (row[totalWDColIndex] || "").toString().trim() : "";
     const passedWDRaw = passedWDColIndex !== -1 ? (row[passedWDColIndex] || "").toString().trim() : "";
+    const ldSalesRaw = ldSalesColIndex !== -1 ? (row[ldSalesColIndex] || "").toString().trim() : "";
     if (monthRaw) curMonth = monthRaw;
     if (secRaw) curSection = secRaw;
     if (unitRaw) curUnit = unitRaw;
@@ -209,7 +211,8 @@ function buildLiveSectionsWide(rawRows) {
     byMonth[month][section][unit] = byMonth[month][section][unit] || {};
     const cells = {};
     BRANDS.forEach((b) => (cells[b] = { target: 0, achv: 0, lastMonth: 0 }));
-    byMonth[month][section][unit][areaRaw] = cells;
+    const ldSalesVal = ldSalesColIndex !== -1 ? parseFloat(ldSalesRaw.replace(/,/g, "")) || 0 : null;
+    byMonth[month][section][unit][areaRaw] = { brands: cells, ldSales: ldSalesVal };
 
     for (let i = baseCols; i < row.length; i++) {
       const meta = colMeta[i];
@@ -232,7 +235,8 @@ function buildLiveSectionsWide(rawRows) {
         name: unitName,
         areas: Object.keys(sectionMap[secName][unitName]).map((areaName) => ({
           name: areaName,
-          brands: sectionMap[secName][unitName][areaName],
+          brands: sectionMap[secName][unitName][areaName].brands,
+          ldSales: sectionMap[secName][unitName][areaName].ldSales,
         })),
       })),
     }));
@@ -241,7 +245,14 @@ function buildLiveSectionsWide(rawRows) {
   monthKeys.forEach((m) => (byMonthArrays[m] = toSectionsArray(byMonth[m])));
 
   if (!hasMonthCol) {
-    return { hasMonths: false, months: [], byMonth: {}, sections: byMonthArrays["current"], pace: paceByMonth["current"] || null };
+    return {
+      hasMonths: false,
+      months: [],
+      byMonth: {},
+      sections: byMonthArrays["current"],
+      pace: paceByMonth["current"] || null,
+      hasLdSales: ldSalesColIndex !== -1,
+    };
   }
   const months = monthKeys.sort((a, b) => {
     const da = parseMonthKey(a);
@@ -249,7 +260,7 @@ function buildLiveSectionsWide(rawRows) {
     if (da && db) return db - da;
     return b.localeCompare(a);
   });
-  return { hasMonths: true, months, byMonth: byMonthArrays, paceByMonth, sections: byMonthArrays[months[0]] };
+  return { hasMonths: true, months, byMonth: byMonthArrays, paceByMonth, sections: byMonthArrays[months[0]], hasLdSales: ldSalesColIndex !== -1 };
 }
 
 // SKU_Daily_Data sheet -> raw rows used for working-day cumulative comparisons
@@ -461,6 +472,15 @@ function computeLastDaySales(skuRows, brand) {
   return { date: latestDate, items, total };
 }
 
+// LD Sales now comes straight from the Target vs Progress sheet's own "LD Sales" column (per Area),
+// summed up to Unit and Section level. No client-side snapshotting needed.
+function ldForUnit(unit) {
+  return unit.areas.reduce((acc, a) => acc + (a.ldSales || 0), 0);
+}
+function ldForSection(section) {
+  return section.units.reduce((acc, u) => acc + ldForUnit(u), 0);
+}
+
 function computeSkuComparisonLive(skuRows, brand, refMonth) {
   const results = (SKU_LIST[brand] || []).map((s) => {
     const t = computeWorkingDayTrend(skuRows, brand, s, refMonth);
@@ -529,6 +549,7 @@ function exportDashboardToExcel(activeSections, brand) {
           "Rolling Forecast (KG)": s.target,
           "Result (KG)": s.achv,
           "Progress %": Number(achPct(s).toFixed(1)),
+          ...(a.ldSales !== null && a.ldSales !== undefined ? { "LD Sales (KG)": a.ldSales } : {}),
         });
       })
     )
@@ -642,7 +663,7 @@ function ProgressBar({ pct }) {
 }
 
 // ---------- Row components ----------
-function AreaRow({ area, brand }) {
+function AreaRow({ area, brand, showLd }) {
   const s = getCell(area.brands, brand);
   const pct = achPct(s);
   return (
@@ -656,14 +677,16 @@ function AreaRow({ area, brand }) {
           <AchBadge pct={pct} />
         </div>
       </td>
+      {showLd && <td className="py-2 text-right pr-6 text-slate-500">{fmt(area.ldSales || 0)}</td>}
     </tr>
   );
 }
 
-function UnitBlock({ unit, brand }) {
+function UnitBlock({ unit, brand, showLd }) {
   const [open, setOpen] = useState(false);
   const s = sumBrand(unit.areas, brand);
   const pct = achPct(s);
+  const ld = ldForUnit(unit);
   return (
     <>
       <tr className="text-sm border-b border-slate-100 bg-slate-50/60 cursor-pointer" onClick={() => setOpen(!open)}>
@@ -679,16 +702,18 @@ function UnitBlock({ unit, brand }) {
             <AchBadge pct={pct} />
           </div>
         </td>
+        {showLd && <td className="py-2.5 text-right pr-6 font-medium text-slate-600">{fmt(ld)}</td>}
       </tr>
-      {open && unit.areas.map((a) => <AreaRow key={a.name} area={a} brand={brand} />)}
+      {open && unit.areas.map((a) => <AreaRow key={a.name} area={a} brand={brand} showLd={showLd} />)}
     </>
   );
 }
 
-function SectionBlock({ section, brand }) {
+function SectionBlock({ section, brand, showLd }) {
   const [open, setOpen] = useState(true);
   const s = sumUnits(section.units, brand);
   const pct = achPct(s);
+  const ldTotalSection = ldForSection(section);
   return (
     <>
       <tr className="text-sm cursor-pointer" onClick={() => setOpen(!open)} style={{ background: NAVY }}>
@@ -703,8 +728,9 @@ function SectionBlock({ section, brand }) {
             <AchBadge pct={pct} />
           </div>
         </td>
+        {showLd && <td className="py-3 text-right pr-6 font-semibold text-white/90">{fmt(ldTotalSection)}</td>}
       </tr>
-      {open && section.units.map((u) => <UnitBlock key={u.name} unit={u} brand={brand} />)}
+      {open && section.units.map((u) => <UnitBlock key={u.name} unit={u} brand={brand} showLd={showLd} />)}
     </>
   );
 }
@@ -952,6 +978,8 @@ export default function Dashboard() {
     if (!liveSkuRows) return null;
     return computeLastDaySales(liveSkuRows, skuBrand);
   }, [liveSkuRows, skuBrand]);
+  const showLd = !!(targetData && targetData.hasLdSales);
+  const ldGrandTotal = useMemo(() => (showLd ? allAreas.reduce((acc, a) => acc + (a.ldSales || 0), 0) : 0), [showLd, allAreas]);
   const lastUpdatedLabel = useMemo(() => {
     if (!liveSkuRows || !liveSkuRows.length) return null;
     const maxDate = liveSkuRows.reduce((a, r) => (r.date > a ? r.date : a), liveSkuRows[0].date);
@@ -1101,6 +1129,9 @@ export default function Dashboard() {
               ) : null
             }
           />
+          {showLd && (
+            <KpiCard label="LD Sales" value={fmt(ldGrandTotal)} sub="from sheet, running month" icon={Package} accent={GOLD} />
+          )}
         </div>
 
         {/* Hierarchy table */}
@@ -1112,11 +1143,12 @@ export default function Dashboard() {
                 <th className="text-right py-3 pr-4 font-semibold">Rolling Forecast</th>
                 <th className="text-right py-3 pr-4 font-semibold">Result</th>
                 <th className="text-right py-3 pr-6 font-semibold">Progress</th>
+                {showLd && <th className="text-right py-3 pr-6 font-semibold">LD Sales</th>}
               </tr>
             </thead>
             <tbody>
               {activeSections.map((s) => (
-                <SectionBlock key={s.name} section={s} brand={brand} />
+                <SectionBlock key={s.name} section={s} brand={brand} showLd={showLd} />
               ))}
             </tbody>
           </table>
