@@ -170,7 +170,7 @@ function buildLiveSectionsWide(rawRows) {
   }
   const colMeta = filledRow1.map((brandLabel, i) => {
     if (i < baseCols || extraCols.includes(i)) return null;
-    const metric = (row2[i] || "").toString().trim().toLowerCase();
+    const metric = normalizeKey(row2[i] || "");
     return { brand: brandLabel, metric };
   });
 
@@ -215,12 +215,12 @@ function buildLiveSectionsWide(rawRows) {
     for (let i = baseCols; i < row.length; i++) {
       const meta = colMeta[i];
       if (!meta || !meta.brand) continue;
-      const brandKey = BRANDS.find((b) => b.toLowerCase() === meta.brand.toLowerCase());
+      const brandKey = BRANDS.find((b) => normalizeKey(b) === normalizeKey(meta.brand));
       if (!brandKey) continue; // e.g. the sheet's own "Total" columns
       const val = parseFloat(String(row[i]).replace(/,/g, "")) || 0;
       if (meta.metric === "rf") cells[brandKey].target = val;
       else if (meta.metric === "result") cells[brandKey].achv = val;
-      else if (meta.metric === "ld sales" || meta.metric === "ldsales" || meta.metric === "ld sale") {
+      else if (meta.metric.startsWith("ldsale")) {
         cells[brandKey].ldSales = val;
         hasLdSalesCol = true;
       }
