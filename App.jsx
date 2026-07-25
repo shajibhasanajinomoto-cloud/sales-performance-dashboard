@@ -973,14 +973,14 @@ export default function Dashboard() {
     if (!liveSkuRows) return null;
     return computeLastDaySales(liveSkuRows, skuBrand);
   }, [liveSkuRows, skuBrand]);
-  const showLd = !!(targetData && targetData.hasLdSales);
+  const isCurrentMonthView = !targetData?.hasMonths || !selectedTargetMonth || selectedTargetMonth === targetData.months[0];
+  const showLd = !!(targetData && targetData.hasLdSales && isCurrentMonthView);
   const ldGrandTotal = showLd ? totals.ldSales || 0 : 0;
   const lastUpdatedLabel = useMemo(() => {
     if (!liveSkuRows || !liveSkuRows.length) return null;
     const maxDate = liveSkuRows.reduce((a, r) => (r.date > a ? r.date : a), liveSkuRows[0].date);
     return maxDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   }, [liveSkuRows]);
-  const isCurrentMonthView = !targetData?.hasMonths || !selectedTargetMonth || selectedTargetMonth === targetData.months[0];
   const workingDayPace = useMemo(() => {
     let sheetPace = null;
     if (targetData) {
