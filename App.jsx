@@ -99,7 +99,16 @@ function buildLiveSectionsWide(rawRows) {
   };
   const totalWDColIndex = findCol(["totalworkingdays", "totalworkingday", "workingdaystotal"]);
   const passedWDColIndex = findCol(["workingdayspassed", "workingdaypassed", "workingdayspass", "dayspassed", "workingdaydone"]);
-  const updateTillColIndex = findCol(["updatetilldate", "updatetill", "updatedtill", "lastupdate", "updateddate", "lastupdated"]);
+  let updateTillColIndex = row2.findIndex((h) => {
+    const n = normalizeKey(h || "");
+    return n.includes("update") && n.includes("till");
+  });
+  if (updateTillColIndex === -1) {
+    updateTillColIndex = row1.findIndex((h) => {
+      const n = normalizeKey(h || "");
+      return n.includes("update") && n.includes("till");
+    });
+  }
   const extraCols = [monthColIndex, totalWDColIndex, passedWDColIndex, updateTillColIndex].filter((i) => i !== -1);
 
   const baseCols = 3; // Section, Unit, Area always occupy the first 3 columns
