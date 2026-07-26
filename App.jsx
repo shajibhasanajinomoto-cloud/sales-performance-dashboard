@@ -1,24 +1,17 @@
 import React, { useState, useMemo, useEffect } from "react";
 import Papa from "papaparse";
-import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, Cell } from "recharts";
-import * as XLSX from "xlsx";
-import { ChevronRight, ChevronDown, TrendingUp, TrendingDown, Target, Percent, LayoutDashboard, LineChart as LineChartIcon, ArrowLeft, Wifi, WifiOff, Loader2, Download, Calendar, CheckCircle2, AlertTriangle, Gauge, Receipt, Package, Scale, Banknote } from "lucide-react";
+import { ChevronRight, ChevronDown, Target, Percent, Wifi, WifiOff, Loader2, Download, Calendar, Package, CheckCircle2, AlertTriangle } from "lucide-react";
 
-// ---------- Google Sheet CSV sources ----------
+// ---------- Google Sheet CSV source ----------
 const TARGET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRbKm9XW2L3mvPuUwTXCcLLt5nN3MFO0IciJ3ta5waPjerG0A459RtjwcDBinBgJeJxZpQsZBz9w8kZ/pub?output=csv";
-const SKU_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSV9JuunrwMmHZ6rC7i2LROX_rvHI4pFFW9AnafZJsktehmLmfudPgNajTA03csnkTGIthOob8lgKGQ/pub?output=csv";
 
-// ---------- Mock data (structure mirrors ABL: Section -> Unit -> Area) ----------
+// Fill this in with the direct download/view link of the Excel file you upload online
+// (e.g. a Google Drive "anyone with link" share link, or a direct .xlsx URL). The
+// "Export Excel" button just opens this link — nothing is generated in-app anymore.
+const EXCEL_EXPORT_URL = "";
+
+// ---------- Mock data (fallback shown before the live sheet connects) ----------
 const BRANDS = ["AJI-Retail", "AJI-Bulk", "Hapima", "TasteMate"];
-// SKU_wise data sheet's own Brand column uses the real product names (not the Retail/Bulk channel split
-// used in the Target vs Progress sheet), and its SKU column holds just the pack size.
-const SKU_BRANDS = ["AJI-NO-MOTO", "HAPIMA", "TasteMate"];
-
-const SKU_LIST = {
-  "AJI-NO-MOTO": ["450g", "200g", "100g", "20TK", "10TK"],
-  "HAPIMA": ["15g"],
-  "TasteMate": ["450g"],
-};
 
 function seedRand(seed) {
   let s = seed;
@@ -66,55 +59,9 @@ const SECTIONS = [
   },
 ];
 
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-// Working-day-wise cumulative comparison: Running month vs Last month vs Last year (same month)
-// Replace this generator with real rows pulled from your Google Sheet (day -> cumulative achv per SKU)
-function workingDayTrend(seed, workingDays = 24) {
-  const rnd = seedRand(seed);
-  const build = (base, growthBias) => {
-    let cum = 0;
-    return Array.from({ length: workingDays }, (_, i) => {
-      const daily = base * (0.85 + rnd() * 0.3) * growthBias;
-      cum += daily;
-      return Math.round(cum);
-    });
-  };
-  const base = 90 + rnd() * 40; // KG per working day
-  const runningMonth = build(base, 1.08); // slight growth bias for demo
-  const lastMonth = build(base, 1.0);
-  const lastYear = build(base * 0.85, 1.0);
-  return Array.from({ length: workingDays }, (_, i) => ({
-    day: `D${i + 1}`,
-    "Running Month": runningMonth[i],
-    "Last Month": lastMonth[i],
-    "Last Year": lastYear[i],
-  }));
-}
-
-// ---------- Live Google Sheets data layer ----------
+// ---------- Live Google Sheet data layer ----------
 function normalizeKey(k) {
   return String(k).toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-function normalizeRow(row) {
-  const out = {};
-  Object.keys(row).forEach((k) => (out[normalizeKey(k)] = row[k]));
-  return out;
-}
-function getField(nrow, candidates, fallback = "") {
-  for (const c of candidates) {
-    if (nrow[c] !== undefined && nrow[c] !== null && String(nrow[c]).trim() !== "") return nrow[c];
-  }
-  return fallback;
-}
-
-async function fetchCsv(url) {
-  const bustUrl = url + (url.includes("?") ? "&" : "?") + "_t=" + Date.now();
-  const res = await fetch(bustUrl, { cache: "no-store" });
-  if (!res.ok) throw new Error("CSV fetch failed: " + res.status);
-  const text = await res.text();
-  const parsed = Papa.parse(text, { header: true, skipEmptyLines: true });
-  return parsed.data;
 }
 
 async function fetchCsvRaw(url) {
@@ -132,11 +79,10 @@ function parseMonthKey(label) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-// Target_vs_Progress sheet (wide format): row1 = brand group headers (merged), row2 = RF/Result/Prog.,
-// data rows = Section, Unit, Area, then RF/Result/Prog. triplets per brand. Section/Unit cells are merged
-// vertically in the sheet, so blanks are forward-filled from the row above. An optional "Month" column
-// (e.g. "July-2026") can sit anywhere in the header row — commonly added at the far right — and turns
-// each block of rows into its own selectable month.
+// Target_vs_Progress sheet (wide format): row1 = brand group headers (merged), row2 = RF/Result/Prog./LD Sales,
+// data rows = Section, Unit, Area, then RF/Result/Prog./LD Sales quadruplets per brand. Section/Unit cells are
+// merged vertically in the sheet, so blanks are forward-filled from the row above. Optional standalone columns
+// (found anywhere in the header row): "Month", "Total Working Days", "Working Days Passed", "Update Till Date".
 function buildLiveSectionsWide(rawRows) {
   if (!rawRows || rawRows.length < 3) return null;
   const row1 = rawRows[0];
@@ -153,7 +99,8 @@ function buildLiveSectionsWide(rawRows) {
   };
   const totalWDColIndex = findCol(["totalworkingdays", "totalworkingday", "workingdaystotal"]);
   const passedWDColIndex = findCol(["workingdayspassed", "workingdaypassed", "workingdayspass", "dayspassed", "workingdaydone"]);
-  const extraCols = [monthColIndex, totalWDColIndex, passedWDColIndex].filter((i) => i !== -1);
+  const updateTillColIndex = findCol(["updatetilldate", "updatetill", "updatedtill", "lastupdate", "updateddate", "lastupdated"]);
+  const extraCols = [monthColIndex, totalWDColIndex, passedWDColIndex, updateTillColIndex].filter((i) => i !== -1);
 
   const baseCols = 3; // Section, Unit, Area always occupy the first 3 columns
 
@@ -175,12 +122,13 @@ function buildLiveSectionsWide(rawRows) {
   });
 
   const byMonth = {}; // month -> sectionMap
-  const paceByMonth = {}; // month -> { total, passed }
+  const paceByMonth = {}; // month -> { total, passed, updateTill }
   let curMonth = "";
   let curSection = "";
   let curUnit = "";
   let curTotalWD = 0;
   let curPassedWD = 0;
+  let curUpdateTill = "";
   let hasLdSalesCol = false;
   for (let r = 2; r < rawRows.length; r++) {
     const row = rawRows[r];
@@ -191,19 +139,22 @@ function buildLiveSectionsWide(rawRows) {
     const areaRaw = (row[2] || "").toString().trim();
     const totalWDRaw = totalWDColIndex !== -1 ? (row[totalWDColIndex] || "").toString().trim() : "";
     const passedWDRaw = passedWDColIndex !== -1 ? (row[passedWDColIndex] || "").toString().trim() : "";
+    const updateTillRaw = updateTillColIndex !== -1 ? (row[updateTillColIndex] || "").toString().trim() : "";
     if (monthRaw) curMonth = monthRaw;
     if (secRaw) curSection = secRaw;
     if (unitRaw) curUnit = unitRaw;
     if (totalWDRaw) curTotalWD = parseInt(totalWDRaw, 10) || 0;
     if (passedWDRaw) curPassedWD = parseInt(passedWDRaw, 10) || 0;
+    if (updateTillRaw) curUpdateTill = updateTillRaw;
     if (!areaRaw) continue;
     const month = hasMonthCol ? curMonth || "Unspecified" : "current";
     const section = curSection || "Unassigned";
     const unit = curUnit || "Unassigned";
 
-    if (!paceByMonth[month] && (curTotalWD || curPassedWD)) {
-      paceByMonth[month] = { total: curTotalWD, passed: curPassedWD };
-    }
+    if (!paceByMonth[month]) paceByMonth[month] = { total: 0, passed: 0, updateTill: "" };
+    if (curTotalWD) paceByMonth[month].total = curTotalWD;
+    if (curPassedWD) paceByMonth[month].passed = curPassedWD;
+    if (curUpdateTill) paceByMonth[month].updateTill = curUpdateTill;
 
     byMonth[month] = byMonth[month] || {};
     byMonth[month][section] = byMonth[month][section] || {};
@@ -264,301 +215,8 @@ function buildLiveSectionsWide(rawRows) {
   return { hasMonths: true, months, byMonth: byMonthArrays, paceByMonth, sections: byMonthArrays[months[0]], hasLdSales: hasLdSalesCol };
 }
 
-// SKU_Daily_Data sheet -> raw rows used for working-day cumulative comparisons
-function buildLiveSkuRows(rawRows) {
-  const rows = rawRows
-    .map(normalizeRow)
-    .map((r) => {
-      const dateStr = String(getField(r, ["day", "date"])).trim();
-      const d = new Date(dateStr);
-      return {
-        date: d,
-        workingDay: parseInt(getField(r, ["workingday"], 0), 10) || 0,
-        brand: String(getField(r, ["brand"])).trim(),
-        sku: String(getField(r, ["sku"])).trim(),
-        team: String(getField(r, ["team"])).trim(),
-        district: String(getField(r, ["district"])).trim(),
-        amount: parseFloat(getField(r, ["qtykg", "qty", "achievementkg", "achievement", "amount"], 0)) || 0,
-        invoice: parseFloat(getField(r, ["invoice"], 0)) || 0,
-        pkt: parseFloat(getField(r, ["pktpc", "pkt"], 0)) || 0,
-        qty: parseFloat(getField(r, ["qtykg", "qty"], 0)) || 0,
-        amountTk: parseFloat(getField(r, ["amounttk", "amount"], 0)) || 0,
-      };
-    })
-    .filter((r) => !isNaN(r.date.getTime()) && r.brand && r.sku && r.workingDay > 0);
-  return rows.length ? rows : null;
-}
-
-function getAvailableMonths(skuRows) {
-  const set = new Set();
-  skuRows.forEach((r) => set.add(`${r.date.getFullYear()}-${String(r.date.getMonth() + 1).padStart(2, "0")}`));
-  return Array.from(set).sort().reverse();
-}
-const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-function monthLabel(ym) {
-  const [y, m] = ym.split("-").map(Number);
-  return `${MONTH_NAMES[m - 1]} ${y}`;
-}
-
-function normText(s) {
-  return String(s || "").trim().toLowerCase();
-}
-function zeroTrend(maxDay = 26) {
-  return Array.from({ length: maxDay }, (_, i) => ({ day: `D${i + 1}`, "Running Month": 0, "Last Month": 0, "Last Year": 0 }));
-}
-function computeWorkingDayTrend(skuRows, brand, sku, refMonth, maxDay = 26) {
-  const filtered = skuRows.filter((r) => normText(r.brand) === normText(brand) && normText(r.sku) === normText(sku));
-  if (!filtered.length) return null;
-  let curY, curM;
-  if (refMonth) {
-    [curY, curM] = refMonth.split("-").map(Number);
-    curM -= 1;
-  } else {
-    const latestDate = filtered.reduce((a, r) => (r.date > a ? r.date : a), filtered[0].date);
-    curY = latestDate.getFullYear();
-    curM = latestDate.getMonth();
-  }
-  let lmY = curY;
-  let lmM = curM - 1;
-  if (lmM < 0) {
-    lmM = 11;
-    lmY -= 1;
-  }
-  const lyY = curY - 1;
-  const lyM = curM;
-
-  const bucket = (matchFn) => {
-    const daySum = {};
-    filtered.forEach((r) => {
-      if (matchFn(r.date)) daySum[r.workingDay] = (daySum[r.workingDay] || 0) + r.amount;
-    });
-    let cum = 0;
-    const out = [];
-    for (let d = 1; d <= maxDay; d++) {
-      cum += daySum[d] || 0;
-      out.push(Math.round(cum));
-    }
-    return out;
-  };
-
-  const running = bucket((d) => d.getFullYear() === curY && d.getMonth() === curM);
-  const lastMonth = bucket((d) => d.getFullYear() === lmY && d.getMonth() === lmM);
-  const lastYear = bucket((d) => d.getFullYear() === lyY && d.getMonth() === lyM);
-
-  // Running month should show 0 beyond the last day we actually have data for — not a flat
-  // carried-forward line, which would misleadingly look like the month already finished.
-  const runningMonthRows = filtered.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
-  const currentDay = runningMonthRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
-  for (let i = 0; i < maxDay; i++) {
-    if (i + 1 > currentDay) running[i] = 0;
-  }
-
-  return Array.from({ length: maxDay }, (_, i) => ({
-    day: `D${i + 1}`,
-    "Running Month": running[i],
-    "Last Month": lastMonth[i],
-    "Last Year": lastYear[i],
-  }));
-}
-
-// Same-working-day snapshot across 4 metrics (Invoice count, PKT, KG, Amount) for a specific SKU:
-// Running Month (up to the latest working day reached) vs Last Month vs Last Year, at that same working day.
-function computeMultiMetricSnapshot(skuRows, brand, sku, refMonth) {
-  const filtered = skuRows.filter((r) => normText(r.brand) === normText(brand) && normText(r.sku) === normText(sku));
-  if (!filtered.length) return null;
-  let curY, curM;
-  if (refMonth) {
-    [curY, curM] = refMonth.split("-").map(Number);
-    curM -= 1;
-  } else {
-    const latestDate = filtered.reduce((a, r) => (r.date > a ? r.date : a), filtered[0].date);
-    curY = latestDate.getFullYear();
-    curM = latestDate.getMonth();
-  }
-  let lmY = curY;
-  let lmM = curM - 1;
-  if (lmM < 0) {
-    lmM = 11;
-    lmY -= 1;
-  }
-  const lyY = curY - 1;
-  const lyM = curM;
-
-  const runningRows = filtered.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
-  if (!runningRows.length) return null;
-  const targetDay = runningRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
-
-  const sumUpTo = (matchFn, metric) =>
-    filtered.filter((r) => matchFn(r.date) && r.workingDay <= targetDay).reduce((acc, r) => acc + (r[metric] || 0), 0);
-
-  const metrics = ["invoice", "pkt", "qty", "amountTk"];
-  const out = { day: targetDay };
-  metrics.forEach((m) => {
-    const running = sumUpTo((d) => d.getFullYear() === curY && d.getMonth() === curM, m);
-    const lastMonth = sumUpTo((d) => d.getFullYear() === lmY && d.getMonth() === lmM, m);
-    const lastYear = sumUpTo((d) => d.getFullYear() === lyY && d.getMonth() === lyM, m);
-    out[m] = {
-      running: Math.round(running * 100) / 100,
-      lastMonth: Math.round(lastMonth * 100) / 100,
-      lastYear: Math.round(lastYear * 100) / 100,
-      vsMonth: lastMonth ? ((running - lastMonth) / lastMonth) * 100 : 0,
-      vsYear: lastYear ? ((running - lastYear) / lastYear) * 100 : 0,
-    };
-  });
-  return out;
-}
-
-// District > Team growth/degrowth: cumulative KG up to the current working day, running month vs last month.
-function computeDistrictTeamGrowth(skuRows, refMonth) {
-  if (!skuRows || !skuRows.length) return null;
-  let curY, curM;
-  if (refMonth) {
-    [curY, curM] = refMonth.split("-").map(Number);
-    curM -= 1;
-  } else {
-    const latestDate = skuRows.reduce((a, r) => (r.date > a ? r.date : a), skuRows[0].date);
-    curY = latestDate.getFullYear();
-    curM = latestDate.getMonth();
-  }
-  let lmY = curY;
-  let lmM = curM - 1;
-  if (lmM < 0) {
-    lmM = 11;
-    lmY -= 1;
-  }
-  const runningRows = skuRows.filter((r) => r.date.getFullYear() === curY && r.date.getMonth() === curM);
-  if (!runningRows.length) return null;
-  const currentDay = runningRows.reduce((a, r) => Math.max(a, r.workingDay), 0);
-
-  const sumFor = (rows, district, team) =>
-    rows
-      .filter((r) => r.district === district && r.team === team && r.workingDay <= currentDay)
-      .reduce((acc, r) => acc + (r.qty || 0), 0);
-
-  const lastMonthRows = skuRows.filter((r) => r.date.getFullYear() === lmY && r.date.getMonth() === lmM);
-
-  const districtMap = {};
-  runningRows.forEach((r) => {
-    if (!r.district || !r.team) return;
-    districtMap[r.district] = districtMap[r.district] || new Set();
-    districtMap[r.district].add(r.team);
-  });
-
-  const districts = Object.keys(districtMap).map((district) => {
-    const teams = Array.from(districtMap[district]).map((team) => {
-      const running = Math.round(sumFor(runningRows, district, team) * 100) / 100;
-      const lastMonth = Math.round(sumFor(lastMonthRows, district, team) * 100) / 100;
-      const growth = lastMonth ? ((running - lastMonth) / lastMonth) * 100 : 0;
-      return { team, running, lastMonth, growth };
-    });
-    const dRunning = teams.reduce((a, t) => a + t.running, 0);
-    const dLastMonth = teams.reduce((a, t) => a + t.lastMonth, 0);
-    const dGrowth = dLastMonth ? ((dRunning - dLastMonth) / dLastMonth) * 100 : 0;
-    return { district, running: dRunning, lastMonth: dLastMonth, growth: dGrowth, teams };
-  });
-  return { day: currentDay, districts };
-}
-
-// Last Day Sales: the single most recent day's Qty (KG), per SKU + grand total (not cumulative).
-function computeLastDaySales(skuRows, brand) {
-  if (!skuRows || !skuRows.length) return null;
-  const latestDate = skuRows.reduce((a, r) => (r.date > a ? r.date : a), skuRows[0].date);
-  const rows = skuRows.filter((r) => normText(r.brand) === normText(brand) && r.date.getTime() === latestDate.getTime());
-  const skuList = SKU_LIST[brand] || [];
-  const items = skuList.map((s) => {
-    const value = rows.filter((r) => normText(r.sku) === normText(s)).reduce((acc, r) => acc + (r.qty || 0), 0);
-    return { sku: s, value: Math.round(value * 100) / 100 };
-  });
-  const total = Math.round(items.reduce((acc, i) => acc + i.value, 0) * 100) / 100;
-  return { date: latestDate, items, total };
-}
-
-// LD Sales now comes straight from the Target vs Progress sheet's own "LD Sales" column (per Area),
-// summed up to Unit and Section level. No client-side snapshotting needed.
-function computeSkuComparisonLive(skuRows, brand, refMonth) {
-  const results = (SKU_LIST[brand] || []).map((s) => {
-    const t = computeWorkingDayTrend(skuRows, brand, s, refMonth);
-    if (t) {
-      const idx = t.reduce((acc, d, i) => (d["Running Month"] > 0 ? i : acc), -1);
-      const last = idx >= 0 ? t[idx] : t[t.length - 1];
-      const vsMonth = last["Last Month"] ? ((last["Running Month"] - last["Last Month"]) / last["Last Month"]) * 100 : 0;
-      const vsYear = last["Last Year"] ? ((last["Running Month"] - last["Last Year"]) / last["Last Year"]) * 100 : 0;
-      return { sku: s, "Running Month": last["Running Month"], "Last Month": last["Last Month"], "Last Year": last["Last Year"], vsMonth, vsYear };
-    }
-    // No real rows for this SKU yet — show zeros rather than silently swapping in mock data
-    return { sku: s, "Running Month": 0, "Last Month": 0, "Last Year": 0, vsMonth: 0, vsYear: 0 };
-  });
-  return results.length ? results : null;
-}
-
-function computeWorkingDayPace(skuRows) {
-  if (!skuRows || !skuRows.length) return null;
-  const latestDate = skuRows.reduce((a, r) => (r.date > a ? r.date : a), skuRows[0].date);
-  const curY = latestDate.getFullYear();
-  const curM = latestDate.getMonth();
-  let passed = 0;
-  skuRows.forEach((r) => {
-    if (r.date.getFullYear() === curY && r.date.getMonth() === curM && r.workingDay > passed) passed = r.workingDay;
-  });
-  let lmY = curY;
-  let lmM = curM - 1;
-  if (lmM < 0) {
-    lmM = 11;
-    lmY -= 1;
-  }
-  let total = 0;
-  skuRows.forEach((r) => {
-    if (r.date.getFullYear() === lmY && r.date.getMonth() === lmM && r.workingDay > total) total = r.workingDay;
-  });
-  if (!total) total = 26;
-  return { passed, total };
-}
-
-// ---------- Excel export ----------
-function exportSkuComparisonToExcel(skuComparison, brand, monthLabelText) {
-  const rows = skuComparison.map((d) => ({
-    SKU: d.sku,
-    "Running Month (KG)": d["Running Month"],
-    "Last Month (KG)": d["Last Month"],
-    "Last Year (KG)": d["Last Year"],
-    "MoM %": Number(d.vsMonth.toFixed(1)),
-    "YoY %": Number(d.vsYear.toFixed(1)),
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "SKU Comparison");
-  XLSX.writeFile(wb, `${brand}-SKU-Analysis-${monthLabelText || "latest"}.xlsx`);
-}
-
-function exportDashboardToExcel(activeSections, brand) {
-  const rows = [];
-  activeSections.forEach((sec) =>
-    sec.units.forEach((u) =>
-      u.areas.forEach((a) => {
-        const s = getCell(a.brands, brand);
-        rows.push({
-          Section: sec.name,
-          Unit: u.name,
-          Area: a.name,
-          "Rolling Forecast (KG)": s.target,
-          "Result (KG)": s.achv,
-          "Progress %": Number(achPct(s).toFixed(1)),
-          ...(s.ldSales !== undefined ? { "LD Sales (KG)": s.ldSales } : {}),
-        });
-      })
-    )
-  );
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Target vs Progress");
-  XLSX.writeFile(wb, `${brand}-Target-vs-Progress.xlsx`);
-}
-
-
-
-
+// ---------- Helpers ----------
 const fmt = (n) => `${new Intl.NumberFormat("en-BD").format(Math.round(n))} kg`;
-const fmtNum = (n) => new Intl.NumberFormat("en-BD").format(Math.round(n));
 const TOTAL_LABEL = "Total";
 function getCell(areaBrands, brand) {
   if (brand === TOTAL_LABEL) {
@@ -607,9 +265,6 @@ function sumUnits(units, brand) {
 function achPct(s) {
   return s.target ? (s.achv / s.target) * 100 : 0;
 }
-function growthPct(s) {
-  return s.lastMonth ? ((s.achv - s.lastMonth) / s.lastMonth) * 100 : 0;
-}
 
 const NAVY = "#0A2647";
 const NAVY_LIGHT = "#12395F";
@@ -617,32 +272,16 @@ const RED = "#C81D25";
 const GREEN = "#1F9254";
 const GOLD = "#D9A441";
 const CREAM = "#F4F5F8";
+const BRAND_COLORS = { "AJI-Retail": NAVY, "AJI-Bulk": GOLD, "Hapima": RED, "TasteMate": GREEN, "Total": "#475569" };
 
 function AchBadge({ pct }) {
   const good = pct >= 100;
   return (
     <span
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold"
-      style={{
-        background: good ? "rgba(31,146,84,0.12)" : "rgba(200,29,37,0.1)",
-        color: good ? GREEN : RED,
-      }}
+      style={{ background: good ? "rgba(31,146,84,0.12)" : "rgba(200,29,37,0.1)", color: good ? GREEN : RED }}
     >
       {pct.toFixed(1)}%
-    </span>
-  );
-}
-
-function GrowthBadge({ pct }) {
-  const up = pct >= 0;
-  const Icon = up ? TrendingUp : TrendingDown;
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold"
-      style={{ background: up ? "rgba(31,146,84,0.12)" : "rgba(200,29,37,0.1)", color: up ? GREEN : RED }}
-    >
-      <Icon size={12} />
-      {Math.abs(pct).toFixed(1)}%
     </span>
   );
 }
@@ -651,10 +290,7 @@ function ProgressBar({ pct }) {
   const clamped = Math.min(pct, 130);
   return (
     <div className="w-28 h-1.5 rounded-full bg-slate-200 overflow-hidden">
-      <div
-        className="h-full rounded-full"
-        style={{ width: `${Math.min(clamped, 100)}%`, background: pct >= 100 ? GREEN : NAVY_LIGHT }}
-      />
+      <div className="h-full rounded-full" style={{ width: `${Math.min(clamped, 100)}%`, background: pct >= 100 ? GREEN : NAVY_LIGHT }} />
     </div>
   );
 }
@@ -730,24 +366,6 @@ function SectionBlock({ section, brand, showLd }) {
   );
 }
 
-// All-SKU comparison for a brand: Running Month / Last Month / Last Year totals + growth
-function buildSkuComparison(brandName) {
-  return (SKU_LIST[brandName] || []).map((s) => {
-    const t = workingDayTrend(s.length * 7 + brandName.length);
-    const last = t[t.length - 1];
-    const vsMonth = ((last["Running Month"] - last["Last Month"]) / last["Last Month"]) * 100;
-    const vsYear = ((last["Running Month"] - last["Last Year"]) / last["Last Year"]) * 100;
-    return {
-      sku: s,
-      "Running Month": last["Running Month"],
-      "Last Month": last["Last Month"],
-      "Last Year": last["Last Year"],
-      vsMonth,
-      vsYear,
-    };
-  });
-}
-
 // ---------- Product-wise circular progress ----------
 function RadialProgress({ label, pct, target, achv, color }) {
   const r = 46;
@@ -797,76 +415,13 @@ function RadialProgress({ label, pct, target, achv, color }) {
   );
 }
 
-const BRAND_COLORS = { "AJI-Retail": NAVY, "AJI-Bulk": GOLD, "Hapima": RED, "TasteMate": GREEN, "Total": "#475569", "AJI-NO-MOTO": NAVY, "HAPIMA": RED };
-
 function ProductProgressRow({ allAreas }) {
   return (
     <div className="flex gap-3 mb-6 flex-wrap">
       {BRANDS.map((b) => {
         const s = sumBrand(allAreas, b);
-        return (
-          <RadialProgress
-            key={b}
-            label={b}
-            pct={achPct(s)}
-            target={s.target}
-            achv={s.achv}
-            color={BRAND_COLORS[b]}
-          />
-        );
+        return <RadialProgress key={b} label={b} pct={achPct(s)} target={s.target} achv={s.achv} color={BRAND_COLORS[b]} />;
       })}
-    </div>
-  );
-}
-
-function MetricSnapshotCard({ label, icon: Icon, color, data, unit, decimals = 0 }) {
-  const fmtV = (n) => new Intl.NumberFormat("en-BD", { maximumFractionDigits: decimals }).format(n || 0);
-  return (
-    <div className="rounded-2xl p-4 bg-white" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${color}18` }}>
-          <Icon size={14} style={{ color }} />
-        </div>
-      </div>
-      <div className="text-xl font-extrabold tracking-tight" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>
-        {fmtV(data.running)}{unit}
-      </div>
-      <div className="flex items-center gap-3 mt-2 flex-wrap">
-        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">MoM <GrowthBadge pct={data.vsMonth} /></div>
-        <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">YoY <GrowthBadge pct={data.vsYear} /></div>
-      </div>
-    </div>
-  );
-}
-
-function DistrictTeamRow({ district }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="py-2.5">
-      <div className="flex items-center justify-between cursor-pointer" onClick={() => setOpen(!open)}>
-        <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          {district.district}
-        </span>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-slate-400">{fmt(district.running)}</span>
-          <GrowthBadge pct={district.growth} />
-        </div>
-      </div>
-      {open && (
-        <div className="mt-1.5 pl-6 space-y-1.5">
-          {district.teams.map((t) => (
-            <div key={t.team} className="flex items-center justify-between text-xs">
-              <span className="text-slate-500">{t.team}</span>
-              <div className="flex items-center gap-3">
-                <span className="text-slate-400">{fmt(t.running)}</span>
-                <GrowthBadge pct={t.growth} />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -874,10 +429,7 @@ function DistrictTeamRow({ district }) {
 // ---------- KPI cards ----------
 function KpiCard({ label, value, sub, icon: Icon, accent, badge }) {
   return (
-    <div
-      className="flex-1 min-w-[150px] rounded-2xl p-4 bg-white"
-      style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}
-    >
+    <div className="flex-1 min-w-[150px] rounded-2xl p-4 bg-white" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
       <div className="flex items-center justify-between mb-3">
         <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
         <div className="flex items-center gap-2">
@@ -895,15 +447,10 @@ function KpiCard({ label, value, sub, icon: Icon, accent, badge }) {
 
 // ---------- Main dashboard ----------
 export default function Dashboard() {
-  const [page, setPage] = useState("dashboard"); // "dashboard" | "sku"
   const [brand, setBrand] = useState(BRANDS[0]);
-  const [skuBrand, setSkuBrand] = useState(SKU_BRANDS[0]);
-  const [sku, setSku] = useState(SKU_LIST[SKU_BRANDS[0]][0]);
   const [targetData, setTargetData] = useState(null);
-  const [liveSkuRows, setLiveSkuRows] = useState(null);
   const [dataStatus, setDataStatus] = useState("loading"); // loading | live | mock
-  const [selectedMonth, setSelectedMonth] = useState(null); // "YYYY-MM" or null = latest (SKU page)
-  const [selectedTargetMonth, setSelectedTargetMonth] = useState(null); // Target sheet month (page 1)
+  const [selectedTargetMonth, setSelectedTargetMonth] = useState(null);
 
   useEffect(() => {
     const link = document.createElement("link");
@@ -915,14 +462,12 @@ export default function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([fetchCsvRaw(TARGET_CSV_URL), fetchCsv(SKU_CSV_URL)])
-      .then(([targetRows, skuRows]) => {
+    fetchCsvRaw(TARGET_CSV_URL)
+      .then((targetRows) => {
         if (cancelled) return;
         const sections = buildLiveSectionsWide(targetRows);
-        const skus = buildLiveSkuRows(skuRows);
         if (sections) setTargetData(sections);
-        if (skus) setLiveSkuRows(skus);
-        setDataStatus(sections || skus ? "live" : "mock");
+        setDataStatus(sections ? "live" : "mock");
       })
       .catch(() => {
         if (!cancelled) setDataStatus("mock");
@@ -942,70 +487,27 @@ export default function Dashboard() {
   }, [targetData, selectedTargetMonth]);
   const allAreas = useMemo(() => activeSections.flatMap((s) => s.units.flatMap((u) => u.areas)), [activeSections]);
   const totals = useMemo(() => sumBrand(allAreas, brand), [allAreas, brand]);
-  const availableMonths = useMemo(() => (liveSkuRows ? getAvailableMonths(liveSkuRows) : []), [liveSkuRows]);
-  const trend = useMemo(() => {
-    if (liveSkuRows) {
-      const t = computeWorkingDayTrend(liveSkuRows, skuBrand, sku, selectedMonth);
-      return t || zeroTrend();
-    }
-    return workingDayTrend(sku.length * 7 + skuBrand.length);
-  }, [sku, skuBrand, liveSkuRows, selectedMonth]);
-  const lastDataIdx = trend.reduce((acc, t, i) => (t["Running Month"] > 0 ? i : acc), -1);
-  const last = lastDataIdx >= 0 ? trend[lastDataIdx] : trend[trend.length - 1];
-  const vsLastMonth = last["Last Month"] ? ((last["Running Month"] - last["Last Month"]) / last["Last Month"]) * 100 : 0;
-  const vsLastYear = last["Last Year"] ? ((last["Running Month"] - last["Last Year"]) / last["Last Year"]) * 100 : 0;
-  const skuComparison = useMemo(() => {
-    if (liveSkuRows) {
-      const c = computeSkuComparisonLive(liveSkuRows, skuBrand, selectedMonth);
-      if (c) return c;
-    }
-    return buildSkuComparison(skuBrand);
-  }, [skuBrand, liveSkuRows, selectedMonth]);
-  const multiMetric = useMemo(() => {
-    if (!liveSkuRows) return null;
-    return computeMultiMetricSnapshot(liveSkuRows, skuBrand, sku, selectedMonth);
-  }, [liveSkuRows, skuBrand, sku, selectedMonth]);
-  const districtGrowth = useMemo(() => {
-    if (!liveSkuRows) return null;
-    return computeDistrictTeamGrowth(liveSkuRows, selectedMonth);
-  }, [liveSkuRows, selectedMonth]);
-  const lastDaySales = useMemo(() => {
-    if (!liveSkuRows) return null;
-    return computeLastDaySales(liveSkuRows, skuBrand);
-  }, [liveSkuRows, skuBrand]);
+
   const isCurrentMonthView = !targetData?.hasMonths || !selectedTargetMonth || selectedTargetMonth === targetData.months[0];
   const showLd = !!(targetData && targetData.hasLdSales && isCurrentMonthView);
   const ldGrandTotal = showLd ? totals.ldSales || 0 : 0;
-  const lastUpdatedLabel = useMemo(() => {
-    if (!liveSkuRows || !liveSkuRows.length) return null;
-    const maxDate = liveSkuRows.reduce((a, r) => (r.date > a ? r.date : a), liveSkuRows[0].date);
-    return maxDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-  }, [liveSkuRows]);
-  const workingDayPace = useMemo(() => {
-    let sheetPace = null;
-    if (targetData) {
-      if (targetData.hasMonths) {
-        const m = selectedTargetMonth || targetData.months[0];
-        sheetPace = targetData.paceByMonth?.[m] || null;
-      } else {
-        sheetPace = targetData.pace || null;
-      }
+
+  const currentPace = useMemo(() => {
+    if (!targetData) return null;
+    if (targetData.hasMonths) {
+      const m = selectedTargetMonth || targetData.months[0];
+      return targetData.paceByMonth?.[m] || null;
     }
-    if (sheetPace) return sheetPace;
-    if (isCurrentMonthView && liveSkuRows) return computeWorkingDayPace(liveSkuRows);
-    return null;
-  }, [targetData, selectedTargetMonth, isCurrentMonthView, liveSkuRows]);
+    return targetData.pace || null;
+  }, [targetData, selectedTargetMonth]);
+  const workingDayPace = isCurrentMonthView ? currentPace : null;
   const expectedPct = workingDayPace && workingDayPace.total ? (workingDayPace.passed / workingDayPace.total) * 100 : null;
   const actualPct = achPct(totals);
   const onTrack = expectedPct !== null ? actualPct >= expectedPct - 3 : null;
 
-  const handleBrand = (b) => {
-    setBrand(b);
-  };
-  const handleSkuBrand = (b) => {
-    setSkuBrand(b);
-    setSku(SKU_LIST[b][0]);
-  };
+  const lastUpdatedLabel = currentPace && currentPace.updateTill ? currentPace.updateTill : null;
+
+  const handleBrand = (b) => setBrand(b);
   const monthSubLabel =
     targetData?.hasMonths && selectedTargetMonth && selectedTargetMonth !== targetData.months[0] ? `KG, ${selectedTargetMonth}` : "KG, current month";
 
@@ -1030,42 +532,28 @@ export default function Dashboard() {
                   {dataStatus === "mock" && <WifiOff size={10} />}
                   {dataStatus === "loading" ? "Connecting…" : dataStatus === "live" ? "Live from Sheet" : "Demo data"}
                 </span>
-                {page === "dashboard" && targetData?.hasMonths && selectedTargetMonth && selectedTargetMonth !== targetData.months[0] ? (
+                {targetData?.hasMonths && selectedTargetMonth && selectedTargetMonth !== targetData.months[0] ? (
                   <span className="text-[11px] text-white/50 font-medium">{selectedTargetMonth}</span>
                 ) : (
                   lastUpdatedLabel && <span className="text-[11px] text-white/50 font-medium">Updated till {lastUpdatedLabel}</span>
                 )}
               </div>
-              <h1 className="text-2xl font-extrabold text-white" style={{ fontFamily: "'Sora', sans-serif" }}>
-                {page === "dashboard" ? "ROLLING FORECAST DASHBOARD" : "SKU-wise Analysis"}
-              </h1>
+              <h1 className="text-2xl font-extrabold text-white" style={{ fontFamily: "'Sora', sans-serif" }}>ROLLING FORECAST DASHBOARD</h1>
             </div>
             <div className="flex items-center gap-3 flex-wrap">
-              {page === "dashboard" ? (
-                <div className="flex gap-1 bg-white/10 backdrop-blur rounded-xl p-1 border border-white/10">
-                  {[...BRANDS, TOTAL_LABEL].map((b) => (
-                    <button
-                      key={b}
-                      onClick={() => handleBrand(b)}
-                      className="px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all"
-                      style={{
-                        background: brand === b ? "white" : "transparent",
-                        color: brand === b ? NAVY : "rgba(255,255,255,0.75)",
-                      }}
-                    >
-                      {b}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <button
-                  onClick={() => setPage("dashboard")}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold bg-white/10 border border-white/10 text-white hover:bg-white/20 transition-all"
-                >
-                  <ArrowLeft size={14} /> Back to Dashboard
-                </button>
-              )}
-              {page === "dashboard" && targetData?.hasMonths && (
+              <div className="flex gap-1 bg-white/10 backdrop-blur rounded-xl p-1 border border-white/10">
+                {[...BRANDS, TOTAL_LABEL].map((b) => (
+                  <button
+                    key={b}
+                    onClick={() => handleBrand(b)}
+                    className="px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all"
+                    style={{ background: brand === b ? "white" : "transparent", color: brand === b ? NAVY : "rgba(255,255,255,0.75)" }}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+              {targetData?.hasMonths && (
                 <div className="flex items-center gap-1.5 bg-white/10 backdrop-blur rounded-xl px-3 py-2 border border-white/10">
                   <Calendar size={14} className="text-white/80" />
                   <select
@@ -1080,25 +568,13 @@ export default function Dashboard() {
                   </select>
                 </div>
               )}
-              {page === "dashboard" && (
-                <button
-                  onClick={() => setPage("sku")}
-                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-all ml-2"
-                  style={{ background: GOLD, color: NAVY }}
-                >
-                  <LineChartIcon size={14} /> SKU-wise Analysis
-                </button>
-              )}
             </div>
           </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-4 -mt-5 pb-8">
-      {page === "dashboard" ? (
-      <>
-
-        {/* Product-wise total progress (3 shapes) */}
+        {/* Product-wise total progress (4 shapes) */}
         <ProductProgressRow allAreas={allAreas} />
 
         {isCurrentMonthView && workingDayPace && workingDayPace.total > 0 && (
@@ -1124,9 +600,7 @@ export default function Dashboard() {
               ) : null
             }
           />
-          {showLd && (
-            <KpiCard label="LD Sales" value={fmt(ldGrandTotal)} sub="from sheet, running month" icon={Package} accent={GOLD} />
-          )}
+          {showLd && <KpiCard label="LD Sales" value={fmt(ldGrandTotal)} sub="from sheet, running month" icon={Package} accent={GOLD} />}
         </div>
 
         {/* Hierarchy table */}
@@ -1148,167 +622,23 @@ export default function Dashboard() {
             </tbody>
           </table>
         </div>
+
         <div className="flex justify-end mb-6">
-          <button
-            onClick={() => exportDashboardToExcel(activeSections, brand)}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            <Download size={11} /> Export Excel
-          </button>
-        </div>
-      </>
-      ) : (
-      <>
-        {/* Brand + month selector for SKU page */}
-        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
-          <div className="flex gap-1 bg-white rounded-xl p-1 w-fit" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-            {SKU_BRANDS.map((b) => (
-              <button
-                key={b}
-                onClick={() => handleSkuBrand(b)}
-                className="px-3.5 py-1.5 rounded-lg text-sm font-semibold transition-all"
-                style={{
-                  background: skuBrand === b ? NAVY : "transparent",
-                  color: skuBrand === b ? "white" : "#475569",
-                }}
-              >
-                {b}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            {availableMonths.length > 0 && (
-              <div className="flex items-center gap-1.5 bg-white rounded-xl px-3 py-2" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-                <Calendar size={14} style={{ color: NAVY }} />
-                <select
-                  value={selectedMonth || availableMonths[0]}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
-                  className="text-sm font-semibold text-slate-700 bg-transparent outline-none"
-                >
-                  {availableMonths.map((m) => (
-                    <option key={m} value={m}>{monthLabel(m)}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <button
-              onClick={() => exportSkuComparisonToExcel(skuComparison, skuBrand, selectedMonth || (availableMonths[0] || ""))}
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold transition-all"
-              style={{ background: NAVY, color: "white" }}
+          {EXCEL_EXPORT_URL ? (
+            <a
+              href={EXCEL_EXPORT_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-400 hover:text-slate-600 transition-colors"
             >
-              <Download size={14} /> Export Excel
-            </button>
-          </div>
-        </div>
-
-
-        {/* Last Day Sales — per SKU + total (not cumulative) */}
-        {lastDaySales && (
-          <div className="bg-white rounded-2xl p-5 mb-6" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-            <h2 className="text-sm font-bold mb-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>Last Day Sales — {skuBrand}</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              {lastDaySales.date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })} · Qty (KG), single day (not cumulative)
-            </p>
-            <div className="flex gap-3 flex-wrap">
-              {lastDaySales.items.map((it) => (
-                <div key={it.sku} className="flex-1 min-w-[110px] bg-slate-50 rounded-xl px-3 py-2.5 text-center">
-                  <div className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">{it.sku}</div>
-                  <div className="text-base font-bold mt-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{fmtNum(it.value)}</div>
-                </div>
-              ))}
-              <div className="flex-1 min-w-[110px] rounded-xl px-3 py-2.5 text-center" style={{ background: `${NAVY}0F` }}>
-                <div className="text-[10px] uppercase tracking-wide font-semibold" style={{ color: NAVY }}>Total</div>
-                <div className="text-base font-extrabold mt-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>{fmtNum(lastDaySales.total)}</div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* District > Team growth/degrowth */}
-        {districtGrowth && (
-          <div className="bg-white rounded-2xl p-5 mb-6" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-            <h2 className="text-sm font-bold mb-1" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>District-wise Team Growth</h2>
-            <p className="text-xs text-slate-400 mb-4">
-              Qty (KG) up to Day {districtGrowth.day} — running month vs last month, same working day.
-            </p>
-            <div className="divide-y divide-slate-100">
-              {districtGrowth.districts.map((d) => (
-                <DistrictTeamRow key={d.district} district={d} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* SKU trend */}
-        <div className="bg-white rounded-2xl p-5" style={{ boxShadow: "0 1px 2px rgba(10,38,71,0.04), 0 8px 24px -14px rgba(10,38,71,0.18)" }}>
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <h2 className="text-sm font-bold" style={{ color: NAVY, fontFamily: "'Sora', sans-serif" }}>SKU Deep-Dive (working-day cumulative) — {sku}</h2>
-            <div className="flex gap-1 flex-wrap justify-end">
-              {(SKU_LIST[skuBrand] || []).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setSku(s)}
-                  className="px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors"
-                  style={{
-                    background: sku === s ? RED : "#F1F5F9",
-                    color: sku === s ? "white" : "#475569",
-                  }}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {multiMetric ? (
-            <div className="mb-5">
-              <p className="text-xs text-slate-400 mb-3">
-                Same working day comparison — Day {multiMetric.day} (Running Month vs Last Month vs Last Year, up to this day)
-              </p>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <MetricSnapshotCard label="Invoice" icon={Receipt} color={NAVY} data={multiMetric.invoice} unit="" />
-                <MetricSnapshotCard label="PKT (pc)" icon={Package} color={GOLD} data={multiMetric.pkt} unit="" />
-                <MetricSnapshotCard label="Qty (KG)" icon={Scale} color={GREEN} data={multiMetric.qty} unit=" kg" decimals={1} />
-                <MetricSnapshotCard label="Amount (Tk)" icon={Banknote} color={RED} data={multiMetric.amountTk} unit=" tk" />
-              </div>
-            </div>
+              <Download size={11} /> Export Excel
+            </a>
           ) : (
-            <div className="flex gap-3 mb-4 flex-wrap">
-              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-1.5 font-medium">
-                vs Last Month <GrowthBadge pct={vsLastMonth} />
-              </div>
-              <div className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-1.5 font-medium">
-                vs Last Year <GrowthBadge pct={vsLastYear} />
-              </div>
-            </div>
+            <span className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-slate-300 cursor-not-allowed" title="Set EXCEL_EXPORT_URL in the code first">
+              <Download size={11} /> Export Excel
+            </span>
           )}
-
-          <ResponsiveContainer width="100%" height={260}>
-            <AreaChart data={trend} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="gradRunning" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={NAVY} stopOpacity={0.35} />
-                  <stop offset="100%" stopColor={NAVY} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#EEF1F5" vertical={false} />
-              <XAxis dataKey="day" tick={{ fontSize: 10, fill: "#94A3B8" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} axisLine={false} tickLine={false} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-              <Tooltip formatter={(v) => fmt(v)} contentStyle={{ borderRadius: 10, border: "1px solid #E2E8F0", fontSize: 12, boxShadow: "0 8px 24px rgba(10,38,71,0.12)" }} />
-              <Area type="monotone" dataKey="Running Month" stroke={NAVY} strokeWidth={2.5} fill="url(#gradRunning)" dot={false} />
-              <Area type="monotone" dataKey="Last Month" stroke={RED} strokeWidth={1.75} strokeDasharray="5 4" fill="transparent" dot={false} />
-              <Area type="monotone" dataKey="Last Year" stroke="#94A3B8" strokeWidth={1.75} strokeDasharray="2 3" fill="transparent" dot={false} />
-            </AreaChart>
-          </ResponsiveContainer>
-          <div className="flex gap-4 mt-2 text-xs text-slate-500">
-            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: NAVY }} /> Running Month</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: RED }} /> Last Month</span>
-            <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 inline-block rounded-full" style={{ background: "#94A3B8" }} /> Last Year</span>
-          </div>
-          <p className="text-xs text-slate-400 mt-3">Cumulative achievement by working day (D1, D2...) so growth/degrowth is visible at a glance, day-aligned across periods.</p>
         </div>
-      </>
-      )}
 
         <p className="text-xs text-slate-400 mt-4 text-center">
           {dataStatus === "live"
