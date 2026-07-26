@@ -8,7 +8,7 @@ const TARGET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRbKm9XW
 // Fill this in with the direct download/view link of the Excel file you upload online
 // (e.g. a Google Drive "anyone with link" share link, or a direct .xlsx URL). The
 // "Export Excel" button just opens this link — nothing is generated in-app anymore.
-const EXCEL_EXPORT_URL = "";
+const EXCEL_EXPORT_URL = "https://drive.google.com/drive/folders/127g4fpzI6qnLzJR7Czl6053fz9KPT4Zl";
 
 // ---------- Mock data (fallback shown before the live sheet connects) ----------
 const BRANDS = ["AJI-Retail", "AJI-Bulk", "Hapima", "TasteMate"];
