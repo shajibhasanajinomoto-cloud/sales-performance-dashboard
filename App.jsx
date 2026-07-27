@@ -8,7 +8,7 @@ const TARGET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRbKm9XW
 // Fill this in with the direct download/view link of the Excel file you upload online
 // (e.g. a Google Drive "anyone with link" share link, or a direct .xlsx URL). The
 // "Export Excel" button just opens this link — nothing is generated in-app anymore.
-const EXCEL_EXPORT_URL = "https://drive.google.com/drive/folders/127g4fpzI6qnLzJR7Czl6053fz9KPT4Zl";
+const EXCEL_EXPORT_URL = "";
 
 // ---------- Mock data (fallback shown before the live sheet connects) ----------
 const BRANDS = ["AJI-Retail", "AJI-Bulk", "Hapima", "TasteMate"];
@@ -305,48 +305,22 @@ function ProgressBar({ pct }) {
 }
 
 // ---------- Row components ----------
-function AreaRow({ area, brand, showLd }) {
-  const s = getCell(area.brands, brand);
+function UnitBlock({ unit, brand, showLd }) {
+  const s = sumBrand(unit.areas, brand);
   const pct = achPct(s);
   return (
-    <tr className="text-sm border-b border-slate-100 hover:bg-slate-50">
-      <td className="py-2 pl-16 text-slate-600">{area.name}</td>
-      <td className="py-2 text-right pr-4 text-slate-500">{fmt(s.target)}</td>
-      <td className="py-2 text-right pr-4 font-medium text-slate-700">{fmt(s.achv)}</td>
-      <td className="py-2 pr-6">
+    <tr className="text-sm border-b border-slate-100 bg-slate-50/60">
+      <td className="py-2.5 pl-8 font-medium text-slate-700">{unit.name}</td>
+      <td className="py-2.5 text-right pr-4 text-slate-500">{fmt(s.target)}</td>
+      <td className="py-2.5 text-right pr-4 font-medium text-slate-700">{fmt(s.achv)}</td>
+      <td className="py-2.5 pr-6">
         <div className="flex items-center gap-2 justify-end">
           <ProgressBar pct={pct} />
           <AchBadge pct={pct} />
         </div>
       </td>
-      {showLd && <td className="py-2 text-right pr-6 text-slate-500">{fmt(s.ldSales || 0)}</td>}
+      {showLd && <td className="py-2.5 text-right pr-6 font-medium text-slate-600">{fmt(s.ldSales || 0)}</td>}
     </tr>
-  );
-}
-
-function UnitBlock({ unit, brand, showLd }) {
-  const [open, setOpen] = useState(false);
-  const s = sumBrand(unit.areas, brand);
-  const pct = achPct(s);
-  return (
-    <>
-      <tr className="text-sm border-b border-slate-100 bg-slate-50/60 cursor-pointer" onClick={() => setOpen(!open)}>
-        <td className="py-2.5 pl-8 font-medium text-slate-700 flex items-center gap-1">
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          {unit.name}
-        </td>
-        <td className="py-2.5 text-right pr-4 text-slate-500">{fmt(s.target)}</td>
-        <td className="py-2.5 text-right pr-4 font-medium text-slate-700">{fmt(s.achv)}</td>
-        <td className="py-2.5 pr-6">
-          <div className="flex items-center gap-2 justify-end">
-            <ProgressBar pct={pct} />
-            <AchBadge pct={pct} />
-          </div>
-        </td>
-        {showLd && <td className="py-2.5 text-right pr-6 font-medium text-slate-600">{fmt(s.ldSales || 0)}</td>}
-      </tr>
-      {open && unit.areas.map((a) => <AreaRow key={a.name} area={a} brand={brand} showLd={showLd} />)}
-    </>
   );
 }
 
@@ -617,7 +591,7 @@ export default function Dashboard() {
           <table className="w-full">
             <thead>
               <tr className="text-[11px] text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                <th className="text-left py-3 pl-4 font-semibold">Section / Unit / Area</th>
+                <th className="text-left py-3 pl-4 font-semibold">Section / Unit</th>
                 <th className="text-right py-3 pr-4 font-semibold">Rolling Forecast</th>
                 <th className="text-right py-3 pr-4 font-semibold">Result</th>
                 <th className="text-right py-3 pr-6 font-semibold">Progress</th>
