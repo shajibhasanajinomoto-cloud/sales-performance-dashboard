@@ -472,7 +472,7 @@ export default function Dashboard() {
   const totals = useMemo(() => sumBrand(allAreas, brand), [allAreas, brand]);
 
   const isCurrentMonthView = !targetData?.hasMonths || !selectedTargetMonth || selectedTargetMonth === targetData.months[0];
-  const showLd = !!(targetData && targetData.hasLdSales && isCurrentMonthView);
+  const showLd = false; // LD Sales removed from the dashboard view
   const ldGrandTotal = showLd ? totals.ldSales || 0 : 0;
 
   const currentPace = useMemo(() => {
